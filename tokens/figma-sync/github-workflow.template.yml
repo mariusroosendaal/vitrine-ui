@@ -39,7 +39,12 @@ jobs:
       - name: Fetch export from incoming branch
         run: |
           git fetch origin figma-sync/incoming
-          git checkout origin/figma-sync/incoming -- tokens/figma-sync/figma-export.json
+          # Write the export to the working tree WITHOUT staging it. `git checkout
+          # <ref> -- <path>` would add it to the index, and it would then ride into
+          # the PR even with add-paths set. It's gitignored on the default branch,
+          # so writing it this way leaves it untracked and out of the commit.
+          git show origin/figma-sync/incoming:tokens/figma-sync/figma-export.json \
+            > tokens/figma-sync/figma-export.json
 
       - uses: actions/setup-node@v4
         with:
@@ -49,8 +54,8 @@ jobs:
       - name: Transform export → frontend.config.json
         run: node tokens/figma-sync/sync.mjs tokens/figma-sync/figma-export.json
 
-      # The export is gitignored, but the checkout above put a tracked copy on the
-      # working tree — discard it so it can never become part of the PR.
+      # Tidy up: the export is untracked + gitignored so it can't enter the PR
+      # anyway, but don't leave it lying in the runner's working tree.
       - name: Discard the raw export
         run: rm -f tokens/figma-sync/figma-export.json
 
