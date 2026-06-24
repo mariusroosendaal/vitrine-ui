@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Figma Token Sync</title>
+<style>
+  :root { --bg:#fff; --fg:#0a152b; --muted:#717171; --line:#e2e2e2; --accent:#001f5c; --accent-hover:#313bfb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1d1d1d; --fg:#f5f5f5; --muted:#acacac; --line:#3e3e3e; --accent:#81eef3; --accent-hover:#dbf5ff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:12px/1.4 'Inter', system-ui, sans-serif; color:var(--fg); background:var(--bg); padding:16px; }
+  h1 { font-size:13px; margin:0 0 2px; }
+  p.sub { margin:0 0 14px; color:var(--muted); }
+  label { display:block; font-weight:600; margin:0 0 4px; }
+  input[type=text] { width:100%; padding:7px 8px; border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:0; margin-bottom:12px; }
+  button { font:inherit; font-weight:600; padding:9px 12px; border:0; border-radius:0; cursor:pointer; width:100%; }
+  button.primary { background:var(--accent); color:#fff; }
+  button.primary:hover { background:var(--accent-hover); }
+  button.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); margin-top:8px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .counts { display:flex; gap:12px; margin:12px 0; color:var(--muted); flex-wrap:wrap; }
+  .counts b { color:var(--fg); }
+  .log { margin-top:12px; padding:8px; background:rgba(127,127,127,.08); border-radius:0; white-space:pre-wrap; font-family:ui-monospace,monospace; font-size:11px; max-height:120px; overflow:auto; }
+  .ok { color:#00c217; } .warn { color:#ff8300; } .err { color:#eb1600; }
+  hr { border:0; border-top:1px solid var(--line); margin:16px 0; }
+  p.section { margin:0 0 12px; color:var(--muted); }
+  .hint { font-weight:400; color:var(--muted); }
+</style>
+</head>
+<body>
+  <h1>Figma Token Sync</h1>
+  <p class="sub">Reads local variables + styles and syncs them into the repo's token JSON. One-way: Figma → JSON.</p>
+
+  <label for="server">Companion server</label>
+  <input id="server" type="text" value="http://localhost:41789" />
+
+  <div class="counts" id="counts" hidden>
+    <span><b id="cVars">0</b> vars</span>
+    <span><b id="cCols">0</b> collections</span>
+    <span><b id="cText">0</b> text styles</span>
+    <span><b id="cFx">0</b> effect styles</span>
+  </div>
+
+  <button class="primary" id="sync">Read &amp; Sync to repo</button>
+  <button class="ghost" id="dry">Dry run (preview changes)</button>
+  <button class="ghost" id="download">Download export JSON</button>
+
+  <hr />
+  <p class="section">Sync via GitHub (no local server) — commits the export to a branch; a GitHub Action transforms it and opens a PR.</p>
+
+  <label for="repo">GitHub repo <span class="hint">(owner/name)</span></label>
+  <input id="repo" type="text" placeholder="mariusroosendaal/design-system-starter" autocomplete="off" />
+
+  <label for="token">GitHub token <span class="hint">(fine-grained PAT · Contents: write)</span></label>
+  <input id="token" type="password" placeholder="github_pat_…" autocomplete="off" />
+
+  <button class="primary" id="github">Sync to GitHub &amp; open PR</button>
+
+  <div class="log" id="log" role="log" aria-live="polite" hidden></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const logEl = $('log');
+  // build log lines with textContent (never innerHTML) — warnings echo Figma-controlled strings
+  const log = (msg, cls) => {
+    logEl.hidden = false;
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  const clearLog = () => { logEl.replaceChildren(); logEl.hidden = true; };
+
+  const buttons = ['sync', 'dry', 'download', 'github'].map($);
+  const setBusy = (busy) => { for (const b of buttons) b.disabled = busy; };
+
+  let pending = null; // 'sync' | 'dry' | 'download' | 'github'
+
+  const ask = (action) => {
+    if (pending) return; // a run is already in flight
+    pending = action;
+    setBusy(true);
+    clearLog();
+    parent.postMessage({ pluginMessage: { type: 'export' } }, '*');
+  };
+  $('sync').onclick = () => ask('sync');
+  $('dry').onclick = () => ask('dry');
+  $('download').onclick = () => ask('download');
+  $('github').onclick = () => {
+    const repo = $('repo').value.trim();
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) { clearLog(); log('✗ Enter the repo as owner/name', 'err'); return; }
+    if (!$('token').value.trim()) { clearLog(); log('✗ Enter a GitHub token (fine-grained PAT with Contents: write)', 'err'); return; }
+    ask('github');
+  };
+
+  // settings (repo + token) are persisted in clientStorage by the main thread
+  parent.postMessage({ pluginMessage: { type: 'get-settings' } }, '*');
+
+  const done = () => { pending = null; setBusy(false); };
+
+  async function post(data, dryRun) {
+    const base = $('server').value.replace(/\/$/, '');
+    const url = base + (dryRun ? '/?dryRun=1' : '/');
+    log(`POST ${url} …`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000); // don't hang the UI forever
+    try {
+      let r;
+      try { r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), signal: ctrl.signal }); }
+      catch (e) {
+        log(ctrl.signal.aborted ? '✗ Timed out. Is the server responding? (npm run sync:serve)' : '✗ Could not reach the server. Is it running? (npm run sync:serve)', 'err');
+        return;
+      }
+      let body; try { body = await r.json(); } catch { log('✗ Bad response from server', 'err'); return; }
+      if (!body.ok) { log(`✗ ${body.error || 'sync failed'}`, 'err'); return; }
+      if (dryRun) {
+        const changed = body.changed || [];
+        log(changed.length ? `✓ Dry run — ${changed.join(', ')} would change` : '✓ Dry run — no changes (up to date)', 'ok');
+        const detail = body.changes || [];
+        detail.slice(0, 30).forEach((c) => log(c));
+        if (detail.length > 30) log(`… +${detail.length - 30} more`);
+      } else {
+        log(`✓ Synced: ${ (body.written||[]).length ? body.written.join(', ') : 'no changes (already up to date)' }`, 'ok');
+      }
+      (body.warnings || []).forEach((w) => log('⚠ ' + w, 'warn'));
+      parent.postMessage({ pluginMessage: { type: 'notify', message: dryRun ? 'Dry run complete' : 'Tokens synced' } }, '*');
+    } finally {
+      clearTimeout(timer);
+      done();
+    }
+  }
+
+  function download(data) {
+    try {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'figma-export.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      log('✓ Saved figma-export.json — run: node tokens/figma-sync/sync.mjs <path>', 'ok');
+    } finally {
+      done();
+    }
+  }
+
+  // ── GitHub flow: commit the export to a sync branch; an Action opens the PR ──
+  const GH_BRANCH = 'figma-sync/incoming';
+  const GH_PATH = 'tokens/figma-sync/figma-export.json';
+  const b64 = (str) => btoa(unescape(encodeURIComponent(str))); // UTF-8 safe
+
+  const ghHeaders = (token, body) => {
+    const h = { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+    if (body) h['Content-Type'] = 'application/json';
+    return h;
+  };
+
+  async function ghErr(r, prefix) {
+    let detail = '';
+    try { detail = (await r.json()).message || ''; } catch {}
+    log(`✗ ${prefix} (${r.status}${detail ? ': ' + detail : ''})`, 'err');
+  }
+
+  async function pushToGitHub(data) {
+    const api = 'https://api.github.com';
+    const repo = $('repo').value.trim();
+    const token = $('token').value.trim();
+    const [owner, name] = repo.split('/');
+    // persist for next time (clientStorage, local to this Figma client)
+    parent.postMessage({ pluginMessage: { type: 'save-settings', settings: { repo, token } } }, '*');
+    try {
+      log(`Pushing export to ${repo} @ ${GH_BRANCH} …`);
+
+      // default branch + its head sha — a new sync branch starts from here
+      let r = await fetch(`${api}/repos/${owner}/${name}`, { headers: ghHeaders(token) });
+      if (!r.ok) return ghErr(r, 'Repo not found or token lacks access');
+      const base = (await r.json()).default_branch || 'main';
+
+      r = await fetch(`${api}/repos/${owner}/${name}/git/ref/heads/${base}`, { headers: ghHeaders(token) });
+      if (!r.ok) return ghErr(r, `Could not read the ${base} branch`);
+      const baseSha = (await r.json()).object.sha;
+
+      // ensure the sync branch exists (422 = already there, which is fine)
+      r = await fetch(`${api}/repos/${owner}/${name}/git/refs`, {
+        method: 'POST', headers: ghHeaders(token, true),
+        body: JSON.stringify({ ref: `refs/heads/${GH_BRANCH}`, sha: baseSha }),
+      });
+      if (!r.ok && r.status !== 422) return ghErr(r, 'Could not create the sync branch');
+
+      // current export blob sha on the branch (so we update it instead of failing)
+      let sha;
+      r = await fetch(`${api}/repos/${owner}/${name}/contents/${GH_PATH}?ref=${encodeURIComponent(GH_BRANCH)}`, { headers: ghHeaders(token) });
+      if (r.ok) sha = (await r.json()).sha;
+
+      // commit the export onto the sync branch — this push triggers the Action
+      r = await fetch(`${api}/repos/${owner}/${name}/contents/${GH_PATH}`, {
+        method: 'PUT', headers: ghHeaders(token, true),
+        body: JSON.stringify({
+          message: 'Figma token export (via Figma Token Sync plugin)',
+          content: b64(JSON.stringify(data, null, 2)),
+          branch: GH_BRANCH,
+          ...(sha ? { sha } : {}),
+        }),
+      });
+      if (!r.ok) return ghErr(r, 'Could not commit the export');
+
+      log('✓ Export pushed. The GitHub Action will transform tokens and open/update a PR.', 'ok');
+      log(`→ https://github.com/${owner}/${name}/pulls`);
+      parent.postMessage({ pluginMessage: { type: 'notify', message: 'Export pushed to GitHub' } }, '*');
+    } catch (e) {
+      log('✗ ' + ((e && e.message) || e), 'err');
+    } finally {
+      done();
+    }
+  }
+
+  onmessage = (e) => {
+    const msg = e.data.pluginMessage; if (!msg) return;
+    if (msg.type === 'export-data') {
+      $('counts').hidden = false;
+      $('cVars').textContent = msg.counts.variables;
+      $('cCols').textContent = msg.counts.collections;
+      $('cText').textContent = msg.counts.textStyles;
+      $('cFx').textContent = msg.counts.effectStyles;
+      if (pending === 'download') download(msg.data);
+      else if (pending === 'github') pushToGitHub(msg.data);
+      else post(msg.data, pending === 'dry');
+    } else if (msg.type === 'settings') {
+      const s = msg.settings || {};
+      if (s.repo) $('repo').value = s.repo;
+      if (s.token) $('token').value = s.token;
+    } else if (msg.type === 'error') {
+      log('✗ ' + msg.message, 'err');
+      done();
+    }
+  };
+</script>
+</body>
+</html>

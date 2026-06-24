@@ -1,0 +1,70 @@
+# TEMPLATE — copy this into the CONSUMING app (the repo that owns frontend.config.json,
+# e.g. vitrine-ui) at .github/workflows/figma-token-sync.yml. It does not belong in the
+# toolkit repo: the toolkit only produces the config, it doesn't consume or merge it.
+#
+# In the plugin's "Sync to GitHub" form, point the repo at that consuming app — its
+# exports land on figma-sync/incoming there, and this Action turns each one into a PR.
+#
+# Assumes the toolkit lives at tokens/figma-sync/ in the consuming app (the default
+# fork layout). If you vendor it elsewhere, fix the two paths below.
+name: Figma token sync
+
+on:
+  push:
+    branches: [figma-sync/incoming]
+    paths: ['tokens/figma-sync/figma-export.json']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: figma-token-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # Work on the default branch's tree (the base for the PR), then drop the
+      # export in from the incoming branch so the transform has something to read.
+      # Uses the repo's actual default branch (main, 3.x, …) — no hardcoding.
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Fetch export from incoming branch
+        run: |
+          git fetch origin figma-sync/incoming
+          git checkout origin/figma-sync/incoming -- tokens/figma-sync/figma-export.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # build:null in figma-sync.config.mjs, so this only writes frontend.config.json.
+      - name: Transform export → frontend.config.json
+        run: node tokens/figma-sync/sync.mjs tokens/figma-sync/figma-export.json
+
+      # The export is gitignored, but the checkout above put a tracked copy on the
+      # working tree — discard it so it can never become part of the PR.
+      - name: Discard the raw export
+        run: rm -f tokens/figma-sync/figma-export.json
+
+      - name: Open / update sync PR (only if the config drifted)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: figma-sync/update
+          base: ${{ github.event.repository.default_branch }}
+          title: 'Figma token sync'
+          commit-message: 'chore: sync tokens from Figma'
+          body: |
+            Regenerated `frontend.config.json` from the latest Figma export.
+
+            Deterministic transform — no LLM. Review the diff and merge.
+          add-paths: |
+            frontend.config.json
+          delete-branch: true

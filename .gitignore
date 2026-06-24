@@ -13,3 +13,7 @@
 npm-debug.log
 yarn-error.log
 /.php-cs-fixer.cache
+
+# Figma token-sync: on-demand exports, never tracked
+tokens/figma-sync/figma-export.json
+*.figma-export.json
