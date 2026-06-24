@@ -221,15 +221,37 @@ export function transform(fig, opts = {}) {
     typesets[role] = ts;
   }
 
-  const config = { structure, ratios: {}, spacing, color, typography: { families, typesets } };
+  // ── reconcile with the existing config ──────────────────────────────────────
+  // Figma is authoritative ONLY for what it actually defines: structure
+  // breakpoints/columns/gutters, spacing, color, and typography. It has no source
+  // for `structure.container`, `ratios`, or any app-added keys — so carry those
+  // forward from the current config instead of zeroing them on every sync. Only
+  // Figma-owned values are ever rewritten; un-owned fields are a no-op.
+  const prev = opts.existing?.['frontend.config.json'] || {};
+  const preserved = [];
+  if (prev.structure?.container) { structure.container = prev.structure.container; preserved.push('structure.container'); }
+  for (const [k, v] of Object.entries(prev.structure || {})) if (!(k in structure)) { structure[k] = v; preserved.push(`structure.${k}`); }
+  if (prev.ratios && Object.keys(prev.ratios).length) preserved.push('ratios');
+  const ownedTop = new Set(['structure', 'ratios', 'spacing', 'color', 'typography']);
+  for (const k of Object.keys(prev)) if (!ownedTop.has(k)) preserved.push(k);
+
+  const config = {
+    ...prev,                            // carry forward any app-added top-level keys
+    structure,
+    ratios: prev.ratios ?? {},          // no Figma source — preserve
+    spacing,
+    color,
+    typography: { families, typesets },
+  };
   const report = {
     breakpoints: Object.keys(structure.breakpoints),
     colorTokens: Object.keys(color.tokens).length,
     typesets: Object.keys(typesets).length,
     unparsed,
+    preserved,                          // un-owned fields carried over from the existing config
     notes: [
       'spacing groups derived from the numeric space.* scale — confirm against the app',
-      'structure.container defaults to "auto" — wire to a real token if defined',
+      prev.structure?.container ? 'structure.container carried over from the existing config (no Figma source)' : 'structure.container defaults to "auto" — wire to a real token if defined',
       'dark-theme color overrides are not represented in frontend.config.json',
     ],
     warnings,

@@ -24,6 +24,9 @@
   hr { border:0; border-top:1px solid var(--line); margin:16px 0; }
   p.section { margin:0 0 12px; color:var(--muted); }
   .hint { font-weight:400; color:var(--muted); }
+  .badge { margin-top:10px; padding:8px 10px; border-radius:0; font-weight:600; border:1px solid var(--line); }
+  .badge.ok { color:#00a313; border-color:rgba(0,194,23,.5); }
+  .badge.warn { color:#d36b00; border-color:rgba(255,131,0,.5); }
 </style>
 </head>
 <body>
@@ -54,7 +57,9 @@
   <input id="token" type="password" placeholder="github_pat_…" autocomplete="off" />
 
   <button class="primary" id="github">Sync to GitHub &amp; open PR</button>
+  <button class="ghost" id="drift">Check drift vs GitHub</button>
 
+  <div class="badge" id="badge" role="status" aria-live="polite" hidden></div>
   <div class="log" id="log" role="log" aria-live="polite" hidden></div>
 
 <script>
@@ -71,27 +76,31 @@
   };
   const clearLog = () => { logEl.replaceChildren(); logEl.hidden = true; };
 
-  const buttons = ['sync', 'dry', 'download', 'github'].map($);
+  const buttons = ['sync', 'dry', 'download', 'github', 'drift'].map($);
   const setBusy = (busy) => { for (const b of buttons) b.disabled = busy; };
 
-  let pending = null; // 'sync' | 'dry' | 'download' | 'github'
+  let pending = null; // 'sync' | 'dry' | 'download' | 'github' | 'drift'
 
   const ask = (action) => {
     if (pending) return; // a run is already in flight
     pending = action;
     setBusy(true);
     clearLog();
+    $('badge').hidden = true;
     parent.postMessage({ pluginMessage: { type: 'export' } }, '*');
+  };
+  // both GitHub actions need a valid repo + token
+  const needsRepo = () => {
+    const repo = $('repo').value.trim();
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) { clearLog(); log('✗ Enter the repo as owner/name', 'err'); return false; }
+    if (!$('token').value.trim()) { clearLog(); log('✗ Enter a GitHub token (fine-grained PAT · Contents: read for drift, write to sync)', 'err'); return false; }
+    return true;
   };
   $('sync').onclick = () => ask('sync');
   $('dry').onclick = () => ask('dry');
   $('download').onclick = () => ask('download');
-  $('github').onclick = () => {
-    const repo = $('repo').value.trim();
-    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) { clearLog(); log('✗ Enter the repo as owner/name', 'err'); return; }
-    if (!$('token').value.trim()) { clearLog(); log('✗ Enter a GitHub token (fine-grained PAT with Contents: write)', 'err'); return; }
-    ask('github');
-  };
+  $('github').onclick = () => { if (needsRepo()) ask('github'); };
+  $('drift').onclick = () => { if (needsRepo()) ask('drift'); };
 
   // settings (repo + token) are persisted in clientStorage by the main thread
   parent.postMessage({ pluginMessage: { type: 'get-settings' } }, '*');
@@ -214,6 +223,90 @@
     }
   }
 
+  // ── Drift check (prototype): does the CURRENT Figma state differ from the ──────
+  // committed config on the default branch? Runs the repo's OWN transform + diff
+  // (fetched live, single source of truth) right here in the UI — no server, no PR.
+  const GH_CONFIG_PATH = 'frontend.config.json';                       // repo root (tokensDir: '.')
+  const GH_TRANSFORM_PATH = 'tokens/figma-sync/transform.a17.mjs';
+  const GH_DIFF_PATH = 'tokens/figma-sync/diff.mjs';
+  const b64decode = (s) => decodeURIComponent(escape(atob((s || '').replace(/\s/g, '')))); // UTF-8 safe
+
+  // fetch one file's text off a ref via the Contents API (already an allowed domain)
+  async function ghGetFile(api, owner, name, path, ref, token) {
+    const r = await fetch(`${api}/repos/${owner}/${name}/contents/${path}?ref=${encodeURIComponent(ref)}`, { headers: ghHeaders(token) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.content ? b64decode(j.content) : null;
+  }
+
+  // load a dependency-free ESM module's named exports by eval (the UI iframe allows
+  // it; the modules have no top-level imports). Strips `export` and returns bindings.
+  function evalModule(src, names) {
+    const body = src.replace(/^\s*export\s+(?=(?:async\s+)?(?:function|const|let|var|class)\b)/gm, '')
+      + `\n; return { ${names.join(', ')} };`;
+    return new Function(body)();
+  }
+
+  function showBadge(changes, base) {
+    const el = $('badge');
+    el.hidden = false;
+    if (!changes.length) {
+      el.className = 'badge ok';
+      el.textContent = `✓ In sync with ${base} — Figma matches the committed tokens`;
+    } else {
+      el.className = 'badge warn';
+      el.textContent = `⚠ Figma is ${changes.length} token${changes.length === 1 ? '' : 's'} ahead of ${base} — sync to update`;
+    }
+  }
+
+  async function checkDrift(data) {
+    const api = 'https://api.github.com';
+    const repo = $('repo').value.trim();
+    const token = $('token').value.trim();
+    const [owner, name] = repo.split('/');
+    parent.postMessage({ pluginMessage: { type: 'save-settings', settings: { repo, token } } }, '*');
+    try {
+      log(`Checking drift vs ${repo} …`);
+      let r = await fetch(`${api}/repos/${owner}/${name}`, { headers: ghHeaders(token) });
+      if (!r.ok) return ghErr(r, 'Repo not found or token lacks access');
+      const base = (await r.json()).default_branch || 'main';
+
+      // committed config + the repo's own transform/diff, all off the default branch
+      const [cfgSrc, transformSrc, diffSrc] = await Promise.all([
+        ghGetFile(api, owner, name, GH_CONFIG_PATH, base, token),
+        ghGetFile(api, owner, name, GH_TRANSFORM_PATH, base, token),
+        ghGetFile(api, owner, name, GH_DIFF_PATH, base, token),
+      ]);
+      const missing = [
+        cfgSrc == null && GH_CONFIG_PATH,
+        transformSrc == null && GH_TRANSFORM_PATH,
+        diffSrc == null && GH_DIFF_PATH,
+      ].filter(Boolean);
+      if (missing.length) {
+        log(`✗ Not found on ${base}: ${missing.join(', ')}`, 'err');
+        log('  Re-install the toolkit into this repo and push (it may predate diff.mjs).', 'warn');
+        return;
+      }
+
+      let committed; try { committed = JSON.parse(cfgSrc); } catch { return log('✗ Committed config is not valid JSON', 'err'); }
+      const { transform } = evalModule(transformSrc, ['transform', 'TOKEN_FILES']);
+      const { diffTokens } = evalModule(diffSrc, ['diffTokens', 'flattenLeaves']);
+
+      // candidate = what a sync would produce now, reconciled against the committed config
+      const { files } = transform(data, { existing: { 'frontend.config.json': committed } });
+      const changes = diffTokens(committed, files['frontend.config.json']);
+
+      showBadge(changes, base);
+      changes.slice(0, 30).forEach((c) => log(c));
+      if (changes.length > 30) log(`… +${changes.length - 30} more`);
+      parent.postMessage({ pluginMessage: { type: 'notify', message: changes.length ? `Figma is ${changes.length} tokens ahead` : 'In sync with GitHub' } }, '*');
+    } catch (e) {
+      log('✗ ' + ((e && e.message) || e), 'err');
+    } finally {
+      done();
+    }
+  }
+
   onmessage = (e) => {
     const msg = e.data.pluginMessage; if (!msg) return;
     if (msg.type === 'export-data') {
@@ -224,6 +317,7 @@
       $('cFx').textContent = msg.counts.effectStyles;
       if (pending === 'download') download(msg.data);
       else if (pending === 'github') pushToGitHub(msg.data);
+      else if (pending === 'drift') checkDrift(msg.data);
       else post(msg.data, pending === 'dry');
     } else if (msg.type === 'settings') {
       const s = msg.settings || {};

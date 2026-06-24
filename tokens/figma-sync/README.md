@@ -81,6 +81,22 @@ npm run sync -- export.json --report          # coverage only
 Repo/token are remembered in Figma `clientStorage` (local, never committed). The
 export is read off the `incoming` branch by the Action and never reaches `main`.
 
+### Drift check (prototype)
+
+**Check drift vs GitHub** in the plugin answers "is Figma ahead of the repo?" without
+a sync or a PR. It reads the current variables, fetches the committed
+`frontend.config.json` **and the repo's own `transform.a17.mjs` + `diff.mjs`** off the
+default branch (Contents API — same `api.github.com` already used to sync, read-only),
+runs the transform in the plugin, and diffs against the committed config. The badge
+shows either *in sync* or *Figma is N tokens ahead*, with the per-token changes.
+
+Because it fetches the transform/diff live from the repo, it always runs the **same
+logic** as the CLI and CI — no duplicated transform in the plugin. Source-drift
+detection lives here (not in CI) by necessity: only the plugin can read variables
+(the Variables REST API is Enterprise-only). Prototype caveats: the config path is
+assumed to be `frontend.config.json` at the repo root, and module loading uses `eval`
+in the UI iframe (fine there; never in the plugin's main thread).
+
 **Token:** a **fine-grained PAT** scoped to this repo with **Contents: Read/Write**.
 **One repo setting:** Settings → Actions → General → *Workflow permissions* → enable
 **"Allow GitHub Actions to create and approve pull requests."**
@@ -138,16 +154,22 @@ Run a real export through `--report`, then adjust `CONFIG` in `transform.a17.mjs
 - **Verify on first run** (also flagged in `report.notes`):
   - **spacing** — the numeric `space/*` scale is mapped to a17 `groups`; confirm it
     matches how your app consumes spacing.
-  - **container** — defaults to `"auto"` per breakpoint; point it at a real token if
-    your design defines max container widths.
+  - **container** — defaults to `"auto"` per breakpoint (no Figma source). If you set
+    real widths in the config, they're **preserved across syncs** (see Reconciliation).
   - **dark theme** — a17's `frontend.config.json` color is single-value, so the
     semantic colors emit their **light** values; `dark` overrides aren't represented
     here (handle dark in the app).
 
 ## Notes
 
-- **Source of truth.** Values flow Figma → JSON. Per-token documentation lives in the
-  Figma **variable / text-style descriptions** — author docs there.
+- **Source of truth.** Values flow Figma → JSON, one-way. Per-token documentation
+  lives in the Figma **variable / text-style descriptions** — author docs there.
+- **Reconciliation.** A sync **rebuilds only what Figma owns** (structure
+  breakpoints/columns/gutters, spacing, color, typography) and **carries forward
+  everything it doesn't** — `structure.container`, `ratios`, and any app-added keys.
+  So editing a Figma-owned value in the config is futile (the next sync reverts it,
+  visibly, in the PR diff — go change it in Figma), but app-only config is safe from
+  being zeroed. The carried-over fields are listed in `report.preserved`.
 - **Exports aren't tracked.** The plugin produces `figma-export.json` on demand; it's
   gitignored. The GitHub flow commits it to the `figma-sync/incoming` branch only.
 - Stop the server with Ctrl-C. Port override: `FIGMA_SYNC_PORT=xxxx npm run sync:serve`

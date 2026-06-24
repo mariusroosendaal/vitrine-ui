@@ -114,5 +114,30 @@ assert.equal(report.typesets, 1);
 assert.ok(report.colorTokens >= 3);
 assert.equal(warnings.length, 0, `no warnings; got ${JSON.stringify(warnings)}`);
 
+// ── reconcile: un-owned fields carry forward from the existing config ──
+// Figma owns structure.breakpoints/columns/gutters, spacing, color, typography;
+// it has no source for structure.container, ratios, or app-added keys, so a sync
+// must preserve those rather than zero them.
+const existingCfg = {
+  structure: { container: { sm: '100%', lg: '1280px' }, customSlot: { sm: 'x' } },
+  ratios: { golden: 1.618 },
+  appOnly: { keep: true },
+  color: { tokens: { 'stale-should-be-overwritten': '#000000' } },
+};
+const r = transform(fig, { existing: { 'frontend.config.json': existingCfg } });
+const c2 = r.files['frontend.config.json'];
+assert.deepEqual(c2.structure.container, { sm: '100%', lg: '1280px' }, 'container carried over (no Figma source)');
+assert.deepEqual(c2.structure.customSlot, { sm: 'x' }, 'app-added structure sub-key preserved');
+assert.deepEqual(c2.ratios, { golden: 1.618 }, 'ratios preserved (no Figma source)');
+assert.deepEqual(c2.appOnly, { keep: true }, 'app-added top-level key preserved');
+assert.equal(c2.structure.breakpoints.md, '600px', 'Figma-owned structure still rebuilt');
+assert.ok(!('stale-should-be-overwritten' in c2.color.tokens), 'Figma-owned color fully replaces existing');
+assert.equal(c2.color.tokens['gray-950'], '#0a1729', 'Figma-owned color rebuilt from export');
+assert.ok(r.report.preserved.includes('ratios') && r.report.preserved.includes('structure.container') && r.report.preserved.includes('appOnly'), 'report lists preserved fields');
+
+// default (no existing): container falls back to "auto", ratios empty
+assert.equal(c.structure.container.lg, 'auto', 'container defaults to auto when no existing');
+assert.deepEqual(c.ratios, {}, 'ratios empty when no existing');
+
 console.log('✓ transform.a17.test.mjs — all assertions passed');
 console.log(`  ${report.colorTokens} color tokens · ${report.typesets} typeset · breakpoints ${report.breakpoints.join('/')}`);

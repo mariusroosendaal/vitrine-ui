@@ -19,6 +19,10 @@ import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { diffTokens } from './diff.mjs';
+
+// re-exported for back-compat (was defined here before extraction to diff.mjs)
+export { diffTokens } from './diff.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -70,6 +74,10 @@ export function runSync({ exportData, report = false, dryRun = false, onlyFiles 
       log(`\nUnparsed (${rpt.unparsed.length}):`);
       rpt.unparsed.forEach((u) => log(`  ⚠ ${u}`));
     }
+    if (rpt.preserved?.length) {
+      log(`\nPreserved from existing config (no Figma source):`);
+      rpt.preserved.forEach((p) => log(`  • ${p}`));
+    }
     if (rpt.notes?.length) {
       log('\nNotes:');
       rpt.notes.forEach((n) => log(`  • ${n}`));
@@ -111,31 +119,6 @@ export function runSync({ exportData, report = false, dryRun = false, onlyFiles 
     log(`\nDry run: ${changedFiles.length} file(s) would change. Nothing written.`);
   }
   return { files, warnings, report: rpt, written, changed: changedFiles, changes };
-}
-
-// flatten a token tree to Map(path → JSON-encoded value), including mode overrides
-function flattenLeaves(node, path, out) {
-  if (!node || typeof node !== 'object') return;
-  if ('$value' in node) {
-    out.set(path, JSON.stringify(node.$value));
-    const modes = node.$extensions?.['ds.modes'];
-    if (modes) for (const [m, v] of Object.entries(modes)) out.set(`${path}@${m}`, JSON.stringify(v));
-  }
-  for (const [k, v] of Object.entries(node)) if (!k.startsWith('$')) flattenLeaves(v, path ? `${path}.${k}` : k, out);
-}
-
-// human-readable token-level changes between two parsed token files
-export function diffTokens(prevObj, nextObj) {
-  const a = new Map(), b = new Map();
-  flattenLeaves(prevObj, '', a);
-  flattenLeaves(nextObj, '', b);
-  const out = [];
-  for (const [k, v] of b) {
-    if (!a.has(k)) out.push(`+ ${k} = ${v}`);
-    else if (a.get(k) !== v) out.push(`~ ${k}: ${a.get(k)} → ${v}`);
-  }
-  for (const k of a.keys()) if (!b.has(k)) out.push(`- ${k}`);
-  return out;
 }
 
 // CLI entry — only when run directly (`node sync.mjs …`), not when imported
