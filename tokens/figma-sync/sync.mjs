@@ -53,11 +53,27 @@ export function runSync({ exportData, report = false, dryRun = false, onlyFiles 
   const { files, report: rpt } = transform(exportData, { existing, onWarn: (m) => warnings.push(m) });
 
   if (report) {
-    log('\nCollections:');
-    for (const [name, where] of Object.entries(rpt.collections)) log(`  ${where.startsWith('→') ? '✓' : '✗'} ${name.padEnd(24)} ${where}`);
-    log(`\nType ramp:    ${rpt.ramp.styles} text styles → ${rpt.ramp.roles} roles`);
-    log(`Effect styles: ${rpt.effectStyles.matched} matched, ${rpt.effectStyles.skipped.length} skipped`);
-    if (rpt.effectStyles.skipped.length) log(`  skipped: ${rpt.effectStyles.skipped.join(', ')}`);
+    // The report shape is transform-specific; render whatever this one provides.
+    if (rpt.collections) {
+      log('\nCollections:');
+      for (const [name, where] of Object.entries(rpt.collections)) log(`  ${where.startsWith('→') ? '✓' : '✗'} ${name.padEnd(24)} ${where}`);
+    }
+    if (rpt.breakpoints?.length) log(`\nBreakpoints:   ${rpt.breakpoints.join(', ')}`);
+    if (rpt.colorTokens != null) log(`Color tokens:  ${rpt.colorTokens}`);
+    if (rpt.ramp) log(`Type ramp:     ${rpt.ramp.styles} text styles → ${rpt.ramp.roles} roles`);
+    if (rpt.typesets != null) log(`Typesets:      ${rpt.typesets}`);
+    if (rpt.effectStyles) {
+      log(`Effect styles: ${rpt.effectStyles.matched} matched, ${rpt.effectStyles.skipped.length} skipped`);
+      if (rpt.effectStyles.skipped.length) log(`  skipped: ${rpt.effectStyles.skipped.join(', ')}`);
+    }
+    if (rpt.unparsed?.length) {
+      log(`\nUnparsed (${rpt.unparsed.length}):`);
+      rpt.unparsed.forEach((u) => log(`  ⚠ ${u}`));
+    }
+    if (rpt.notes?.length) {
+      log('\nNotes:');
+      rpt.notes.forEach((n) => log(`  • ${n}`));
+    }
     log(`\nWarnings: ${warnings.length}`);
     warnings.forEach((w) => log(`  ⚠ ${w}`));
     return { files, warnings, report: rpt, written: [] };
