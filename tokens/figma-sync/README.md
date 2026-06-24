@@ -83,19 +83,31 @@ export is read off the `incoming` branch by the Action and never reaches `main`.
 
 ### Drift check (prototype)
 
-**Check drift vs GitHub** in the plugin answers "is Figma ahead of the repo?" without
-a sync or a PR. It reads the current variables, fetches the committed
+**Check drift vs GitHub** in the plugin answers "does Figma differ from the repo?"
+without a sync or a PR. It reads the current variables, fetches the committed
 `frontend.config.json` **and the repo's own `transform.a17.mjs` + `diff.mjs`** off the
 default branch (Contents API — same `api.github.com` already used to sync, read-only),
-runs the transform in the plugin, and diffs against the committed config. The badge
-shows either *in sync* or *Figma is N tokens ahead*, with the per-token changes.
+runs the transform in the plugin, and diffs against the committed config.
+
+**Attributing the diff.** A bare diff can't say *why* config and Figma disagree —
+Figma moved, or someone hand-edited the config? To tell them apart, each sync stamps
+the config with `$figmaSync.hash`: a content hash of "what Figma produced at this
+sync" (the baseline). The drift check re-hashes the committed config:
+
+- diff exists, config still hashes to its baseline ⇒ **Figma is N tokens ahead** (sync).
+- diff exists, config no longer matches its baseline ⇒ **config has local edits** that
+  a sync would overwrite (go change Figma, or revert the edit).
+- config carries no stamp yet ⇒ neutral *"N tokens differ"* — **re-sync once** with this
+  version of `sync.mjs` to write the first baseline and enable attribution.
 
 Because it fetches the transform/diff live from the repo, it always runs the **same
 logic** as the CLI and CI — no duplicated transform in the plugin. Source-drift
 detection lives here (not in CI) by necessity: only the plugin can read variables
 (the Variables REST API is Enterprise-only). Prototype caveats: the config path is
-assumed to be `frontend.config.json` at the repo root, and module loading uses `eval`
-in the UI iframe (fine there; never in the plugin's main thread).
+assumed to be `frontend.config.json` at the repo root; module loading uses `eval` in
+the UI iframe (fine there; never in the plugin's main thread); and attribution is
+binary (it flags that local edits exist, but doesn't yet split a mixed diff token-by-
+token — that needs baseline *values*, not just a hash).
 
 **Token:** a **fine-grained PAT** scoped to this repo with **Contents: Read/Write**.
 **One repo setting:** Settings → Actions → General → *Workflow permissions* → enable

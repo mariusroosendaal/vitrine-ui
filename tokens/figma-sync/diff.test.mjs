@@ -1,6 +1,6 @@
 // Offline proof of the shared diff helpers. Run: node tokens/figma-sync/diff.test.mjs
 import assert from 'node:assert/strict';
-import { diffTokens, flattenLeaves } from './diff.mjs';
+import { diffTokens, flattenLeaves, hashConfig, canonicalize } from './diff.mjs';
 
 // ── plain config values (frontend.config.json shape: no $value wrapper) ──
 const a = { color: { tokens: { black: '#000000', white: '#ffffff' } }, structure: { columns: { sm: '12' } }, ratios: {} };
@@ -32,5 +32,24 @@ flattenLeaves({ a: { b: 'x' }, n: 5, arr: [1, 2] }, '', m);
 assert.equal(m.get('a.b'), '"x"', 'nested string leaf');
 assert.equal(m.get('n'), '5', 'number leaf');
 assert.equal(m.get('arr'), '[1,2]', 'array as single leaf');
+
+// ── hashConfig / canonicalize (baseline stamp for drift attribution) ──
+// stable across key order
+assert.equal(
+  hashConfig({ a: 1, b: { x: 1, y: 2 } }),
+  hashConfig({ b: { y: 2, x: 1 }, a: 1 }),
+  'hash is independent of key order',
+);
+// ignores `$`-prefixed keys (so the $figmaSync stamp never hashes itself)
+const base = { color: { black: '#000' } };
+assert.equal(
+  hashConfig(base),
+  hashConfig({ ...base, $figmaSync: { hash: 'whatever' } }),
+  'hash ignores $-prefixed keys',
+);
+// changes when a real value changes
+assert.notEqual(hashConfig(base), hashConfig({ color: { black: '#111' } }), 'hash tracks value changes');
+// canonicalize drops $-keys and sorts
+assert.deepEqual(canonicalize({ b: 2, a: 1, $x: 9 }), { a: 1, b: 2 }, 'canonicalize sorts and drops $-keys');
 
 console.log('✓ diff.test.mjs — all assertions passed');

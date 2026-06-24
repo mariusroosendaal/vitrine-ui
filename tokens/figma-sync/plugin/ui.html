@@ -247,15 +247,25 @@
     return new Function(body)();
   }
 
-  function showBadge(changes, base) {
+  // prov: { stampedHash, configEdited } — lets us attribute the diff's direction.
+  function showBadge(changes, base, prov) {
     const el = $('badge');
     el.hidden = false;
-    if (!changes.length) {
+    const n = changes.length;
+    if (!n) {
       el.className = 'badge ok';
       el.textContent = `✓ In sync with ${base} — Figma matches the committed tokens`;
+      return;
+    }
+    const tok = `${n} token${n === 1 ? '' : 's'}`;
+    el.className = 'badge warn';
+    if (!prov || prov.stampedHash == null) {
+      // no baseline to compare against — can only report that a diff exists
+      el.textContent = `⚠ ${tok} differ between Figma and ${base}. No baseline stamp yet — re-sync once to enable “Figma-ahead vs hand-edited” attribution.`;
+    } else if (prov.configEdited) {
+      el.textContent = `✎ ${base} has local edits — ${tok} differ from Figma and the config has drifted from its last-synced baseline. A sync would overwrite them.`;
     } else {
-      el.className = 'badge warn';
-      el.textContent = `⚠ Figma is ${changes.length} token${changes.length === 1 ? '' : 's'} ahead of ${base} — sync to update`;
+      el.textContent = `⚠ Figma is ${tok} ahead of ${base} — config is untouched since last sync. Sync to update.`;
     }
   }
 
@@ -290,13 +300,20 @@
 
       let committed; try { committed = JSON.parse(cfgSrc); } catch { return log('✗ Committed config is not valid JSON', 'err'); }
       const { transform } = evalModule(transformSrc, ['transform', 'TOKEN_FILES']);
-      const { diffTokens } = evalModule(diffSrc, ['diffTokens', 'flattenLeaves']);
+      const { diffTokens, hashConfig } = evalModule(diffSrc, ['diffTokens', 'flattenLeaves', 'hashConfig', 'canonicalize']);
 
       // candidate = what a sync would produce now, reconciled against the committed config
       const { files } = transform(data, { existing: { 'frontend.config.json': committed } });
       const changes = diffTokens(committed, files['frontend.config.json']);
 
-      showBadge(changes, base);
+      // Attribution: the committed config carries $figmaSync.hash — the baseline of
+      // "what Figma produced at the last sync." If the committed config still hashes
+      // to that, it's untouched (so a diff means Figma moved ahead); if not, the
+      // config itself was hand-edited away from the baseline.
+      const stampedHash = committed.$figmaSync && committed.$figmaSync.hash;
+      const configEdited = stampedHash != null && hashConfig(committed) !== stampedHash;
+
+      showBadge(changes, base, { stampedHash, configEdited });
       changes.slice(0, 30).forEach((c) => log(c));
       if (changes.length > 30) log(`… +${changes.length - 30} more`);
       parent.postMessage({ pluginMessage: { type: 'notify', message: changes.length ? `Figma is ${changes.length} tokens ahead` : 'In sync with GitHub' } }, '*');
