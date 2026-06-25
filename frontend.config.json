@@ -146,7 +146,7 @@
   },
   "color": {
     "tokens": {
-      "black": "#ffffff",
+      "black": "#000000",
       "white": "#ffffff",
       "gray-50": "#f7f7f7",
       "gray-100": "#e2e2e2",
@@ -532,5 +532,8 @@
         }
       }
     }
+  },
+  "$figmaSync": {
+    "hash": "193b7a05beb904"
   }
 }
