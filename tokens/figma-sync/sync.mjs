@@ -19,7 +19,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { diffTokens, hashConfig } from './diff.mjs';
+import { diffTokens } from './diff.mjs';
 
 // re-exported for back-compat (was defined here before extraction to diff.mjs)
 export { diffTokens } from './diff.mjs';
@@ -55,13 +55,6 @@ export function runSync({ exportData, report = false, dryRun = false, onlyFiles 
 
   const warnings = [];
   const { files, report: rpt } = transform(exportData, { existing, onWarn: (m) => warnings.push(m) });
-
-  // Stamp each emitted config with a provenance hash of its own (non-$) content —
-  // the baseline "what Figma produced at this sync." The plugin's drift check uses
-  // it to tell "Figma moved ahead" from "the config was hand-edited" (see diff.mjs).
-  for (const f of Object.keys(files)) {
-    if (files[f] && typeof files[f] === 'object') files[f].$figmaSync = { hash: hashConfig(files[f]) };
-  }
 
   if (report) {
     // The report shape is transform-specific; render whatever this one provides.

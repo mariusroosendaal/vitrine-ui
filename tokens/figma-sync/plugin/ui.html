@@ -27,14 +27,40 @@
   .badge { margin-top:10px; padding:8px 10px; border-radius:0; font-weight:600; border:1px solid var(--line); }
   .badge.ok { color:#00a313; border-color:rgba(0,194,23,.5); }
   .badge.warn { color:#d36b00; border-color:rgba(255,131,0,.5); }
+  .tabs { display:flex; margin:0 0 14px; border-bottom:1px solid var(--line); }
+  .tabs button { width:auto; flex:1; background:transparent; color:var(--muted); border:0; border-bottom:2px solid transparent; padding:8px 10px; margin:0; }
+  .tabs button[aria-selected="true"] { color:var(--fg); border-bottom-color:var(--accent); }
+  .tabs button:hover:not([aria-selected="true"]) { color:var(--fg); }
+  .panel[hidden] { display:none; }
 </style>
 </head>
 <body>
   <h1>Figma Token Sync</h1>
   <p class="sub">Reads local variables + styles and syncs them into the repo's token JSON. One-way: Figma → JSON.</p>
 
-  <label for="server">Companion server</label>
-  <input id="server" type="text" value="http://localhost:41789" />
+  <div class="tabs" role="tablist" aria-label="Sync method">
+    <button id="tab-local" role="tab" aria-selected="true" aria-controls="panel-local">Local server</button>
+    <button id="tab-git" role="tab" aria-selected="false" aria-controls="panel-git" tabindex="-1">GitHub</button>
+  </div>
+
+  <section class="panel" id="panel-local" role="tabpanel" aria-labelledby="tab-local">
+    <p class="section">Posts the export to the companion server on your machine, which writes the token JSON. Run <code>npm run sync:serve</code> first.</p>
+    <label for="server">Companion server</label>
+    <input id="server" type="text" value="http://localhost:41789" />
+    <button class="primary" id="sync">Read &amp; Sync to repo</button>
+    <button class="ghost" id="dry">Dry run (preview changes)</button>
+    <button class="ghost" id="download">Download export JSON</button>
+  </section>
+
+  <section class="panel" id="panel-git" role="tabpanel" aria-labelledby="tab-git" hidden>
+    <p class="section">No local server: commits the export to a branch; a GitHub Action transforms it and opens a PR. Drift check compares the current Figma state to the committed config.</p>
+    <label for="repo">GitHub repo <span class="hint">(owner/name)</span></label>
+    <input id="repo" type="text" placeholder="owner/name" autocomplete="off" />
+    <label for="token">GitHub token <span class="hint">(fine-grained PAT · Contents: read/write)</span></label>
+    <input id="token" type="password" placeholder="github_pat_…" autocomplete="off" />
+    <button class="primary" id="github">Sync to GitHub &amp; open PR</button>
+    <button class="ghost" id="drift">Check drift vs GitHub</button>
+  </section>
 
   <div class="counts" id="counts" hidden>
     <span><b id="cVars">0</b> vars</span>
@@ -42,22 +68,6 @@
     <span><b id="cText">0</b> text styles</span>
     <span><b id="cFx">0</b> effect styles</span>
   </div>
-
-  <button class="primary" id="sync">Read &amp; Sync to repo</button>
-  <button class="ghost" id="dry">Dry run (preview changes)</button>
-  <button class="ghost" id="download">Download export JSON</button>
-
-  <hr />
-  <p class="section">Sync via GitHub (no local server) — commits the export to a branch; a GitHub Action transforms it and opens a PR.</p>
-
-  <label for="repo">GitHub repo <span class="hint">(owner/name)</span></label>
-  <input id="repo" type="text" placeholder="mariusroosendaal/design-system-starter" autocomplete="off" />
-
-  <label for="token">GitHub token <span class="hint">(fine-grained PAT · Contents: write)</span></label>
-  <input id="token" type="password" placeholder="github_pat_…" autocomplete="off" />
-
-  <button class="primary" id="github">Sync to GitHub &amp; open PR</button>
-  <button class="ghost" id="drift">Check drift vs GitHub</button>
 
   <div class="badge" id="badge" role="status" aria-live="polite" hidden></div>
   <div class="log" id="log" role="log" aria-live="polite" hidden></div>
@@ -102,7 +112,35 @@
   $('github').onclick = () => { if (needsRepo()) ask('github'); };
   $('drift').onclick = () => { if (needsRepo()) ask('drift'); };
 
-  // settings (repo + token) are persisted in clientStorage by the main thread
+  // ── tabs: toggle Local / GitHub; remember the choice + repo/token in clientStorage ──
+  let settings = {};
+  const TABS = { local: ['tab-local', 'panel-local'], git: ['tab-git', 'panel-git'] };
+  const persist = () => parent.postMessage({ pluginMessage: { type: 'save-settings', settings: {
+    repo: $('repo').value.trim(), token: $('token').value.trim(), tab: settings.tab,
+  } } }, '*');
+
+  const activateTab = (name, save = true) => {
+    settings.tab = TABS[name] ? name : 'local';
+    for (const [k, [tabId, panelId]] of Object.entries(TABS)) {
+      const on = k === settings.tab;
+      const tab = $(tabId);
+      tab.setAttribute('aria-selected', String(on));
+      tab.tabIndex = on ? 0 : -1;
+      $(panelId).hidden = !on;
+    }
+    if (save) persist();
+  };
+  $('tab-local').onclick = () => activateTab('local');
+  $('tab-git').onclick = () => activateTab('git');
+  // arrow keys move between tabs (WAI-ARIA tablist pattern)
+  $('tab-local').parentElement.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const next = settings.tab === 'local' ? 'git' : 'local';
+    activateTab(next);
+    $(TABS[next][0]).focus();
+  });
+
+  // settings (repo + token + active tab) are persisted in clientStorage by the main thread
   parent.postMessage({ pluginMessage: { type: 'get-settings' } }, '*');
 
   const done = () => { pending = null; setBusy(false); };
@@ -176,7 +214,7 @@
     const token = $('token').value.trim();
     const [owner, name] = repo.split('/');
     // persist for next time (clientStorage, local to this Figma client)
-    parent.postMessage({ pluginMessage: { type: 'save-settings', settings: { repo, token } } }, '*');
+    persist(); // save repo + token (and current tab)
     try {
       log(`Pushing export to ${repo} @ ${GH_BRANCH} …`);
 
@@ -247,25 +285,16 @@
     return new Function(body)();
   }
 
-  // prov: { stampedHash, configEdited } — lets us attribute the diff's direction.
-  function showBadge(changes, base, prov) {
+  function showBadge(changes, base) {
     const el = $('badge');
     el.hidden = false;
     const n = changes.length;
     if (!n) {
       el.className = 'badge ok';
-      el.textContent = `✓ In sync with ${base} — Figma matches the committed tokens`;
-      return;
-    }
-    const tok = `${n} token${n === 1 ? '' : 's'}`;
-    el.className = 'badge warn';
-    if (!prov || prov.stampedHash == null) {
-      // no baseline to compare against — can only report that a diff exists
-      el.textContent = `⚠ ${tok} differ between Figma and ${base}. No baseline stamp yet — re-sync once to enable “Figma-ahead vs hand-edited” attribution.`;
-    } else if (prov.configEdited) {
-      el.textContent = `✎ ${base} has local edits — ${tok} differ from Figma and the config has drifted from its last-synced baseline. A sync would overwrite them.`;
+      el.textContent = `✓ In sync with ${base} — Figma matches the committed config`;
     } else {
-      el.textContent = `⚠ Figma is ${tok} ahead of ${base} — config is untouched since last sync. Sync to update.`;
+      el.className = 'badge warn';
+      el.textContent = `⚠ Figma and the committed config (${base}) differ in ${n} element${n === 1 ? '' : 's'} — see below`;
     }
   }
 
@@ -274,7 +303,7 @@
     const repo = $('repo').value.trim();
     const token = $('token').value.trim();
     const [owner, name] = repo.split('/');
-    parent.postMessage({ pluginMessage: { type: 'save-settings', settings: { repo, token } } }, '*');
+    persist(); // save repo + token (and current tab)
     try {
       log(`Checking drift vs ${repo} …`);
       let r = await fetch(`${api}/repos/${owner}/${name}`, { headers: ghHeaders(token) });
@@ -300,20 +329,13 @@
 
       let committed; try { committed = JSON.parse(cfgSrc); } catch { return log('✗ Committed config is not valid JSON', 'err'); }
       const { transform } = evalModule(transformSrc, ['transform', 'TOKEN_FILES']);
-      const { diffTokens, hashConfig } = evalModule(diffSrc, ['diffTokens', 'flattenLeaves', 'hashConfig', 'canonicalize']);
+      const { diffTokens } = evalModule(diffSrc, ['diffTokens', 'flattenLeaves']);
 
       // candidate = what a sync would produce now, reconciled against the committed config
       const { files } = transform(data, { existing: { 'frontend.config.json': committed } });
       const changes = diffTokens(committed, files['frontend.config.json']);
 
-      // Attribution: the committed config carries $figmaSync.hash — the baseline of
-      // "what Figma produced at the last sync." If the committed config still hashes
-      // to that, it's untouched (so a diff means Figma moved ahead); if not, the
-      // config itself was hand-edited away from the baseline.
-      const stampedHash = committed.$figmaSync && committed.$figmaSync.hash;
-      const configEdited = stampedHash != null && hashConfig(committed) !== stampedHash;
-
-      showBadge(changes, base, { stampedHash, configEdited });
+      showBadge(changes, base);
       changes.slice(0, 30).forEach((c) => log(c));
       if (changes.length > 30) log(`… +${changes.length - 30} more`);
       parent.postMessage({ pluginMessage: { type: 'notify', message: changes.length ? `Figma is ${changes.length} tokens ahead` : 'In sync with GitHub' } }, '*');
@@ -337,9 +359,10 @@
       else if (pending === 'drift') checkDrift(msg.data);
       else post(msg.data, pending === 'dry');
     } else if (msg.type === 'settings') {
-      const s = msg.settings || {};
-      if (s.repo) $('repo').value = s.repo;
-      if (s.token) $('token').value = s.token;
+      settings = msg.settings || {};
+      if (settings.repo) $('repo').value = settings.repo;
+      if (settings.token) $('token').value = settings.token;
+      activateTab(settings.tab === 'git' ? 'git' : 'local', false); // don't re-save on load
     } else if (msg.type === 'error') {
       log('✗ ' + msg.message, 'err');
       done();

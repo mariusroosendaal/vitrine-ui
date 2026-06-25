@@ -47,8 +47,9 @@ export and is covered by `transform.a17.test.mjs`. The plugin and server are thi
 ## Usage (the normal loop)
 
 1. **Start the server** (in the repo): `npm run sync:serve`
-2. **In Figma**, run the **Figma Token Sync** plugin → click **Read & Sync to repo**.
-   (Use **Dry run** first to preview, or **Download export JSON** to sync via CLI.)
+2. **In Figma**, run the **Figma Token Sync** plugin → on the **Local server** tab,
+   click **Read & Sync to repo**. (Use **Dry run** first to preview, or **Download
+   export JSON** to sync via CLI.) The plugin remembers which tab you last used.
 3. **Review** the diff: `git diff frontend.config.json`, then commit.
 
 > **Restart the server after editing `transform.a17.mjs`.** Node caches modules at
@@ -69,9 +70,9 @@ npm run sync -- export.json --report          # coverage only
 > `.github/workflows/figma-token-sync.yml` there. Without it, the export just lands on
 > the `incoming` branch and nothing transforms it.
 
-1. In the plugin, fill in **GitHub repo** (`owner/name` — the **consuming app**, not
-   this toolkit) and a **fine-grained PAT** (Contents: Read/Write on that repo), then
-   **Sync to GitHub & open PR**.
+1. On the plugin's **GitHub** tab, fill in **GitHub repo** (`owner/name` — the
+   **consuming app**, not this toolkit) and a **fine-grained PAT** (Contents:
+   Read/Write on that repo), then **Sync to GitHub & open PR**.
 2. The plugin commits the export to the **`figma-sync/incoming`** branch. That push
    triggers the consuming app's `figma-token-sync.yml`, which transforms the export
    and opens/updates a single **sync PR** — but only if `frontend.config.json` actually
@@ -87,27 +88,17 @@ export is read off the `incoming` branch by the Action and never reaches `main`.
 without a sync or a PR. It reads the current variables, fetches the committed
 `frontend.config.json` **and the repo's own `transform.a17.mjs` + `diff.mjs`** off the
 default branch (Contents API — same `api.github.com` already used to sync, read-only),
-runs the transform in the plugin, and diffs against the committed config.
-
-**Attributing the diff.** A bare diff can't say *why* config and Figma disagree —
-Figma moved, or someone hand-edited the config? To tell them apart, each sync stamps
-the config with `$figmaSync.hash`: a content hash of "what Figma produced at this
-sync" (the baseline). The drift check re-hashes the committed config:
-
-- diff exists, config still hashes to its baseline ⇒ **Figma is N tokens ahead** (sync).
-- diff exists, config no longer matches its baseline ⇒ **config has local edits** that
-  a sync would overwrite (go change Figma, or revert the edit).
-- config carries no stamp yet ⇒ neutral *"N tokens differ"* — **re-sync once** with this
-  version of `sync.mjs` to write the first baseline and enable attribution.
+runs the transform in the plugin, and diffs against the committed config. The badge
+says either *in sync* or *Figma and the committed config differ in N elements*, and the
+differing tokens are listed below. It reports **that** they differ, not which side is
+"right" — review the listed changes to decide.
 
 Because it fetches the transform/diff live from the repo, it always runs the **same
 logic** as the CLI and CI — no duplicated transform in the plugin. Source-drift
 detection lives here (not in CI) by necessity: only the plugin can read variables
 (the Variables REST API is Enterprise-only). Prototype caveats: the config path is
-assumed to be `frontend.config.json` at the repo root; module loading uses `eval` in
-the UI iframe (fine there; never in the plugin's main thread); and attribution is
-binary (it flags that local edits exist, but doesn't yet split a mixed diff token-by-
-token — that needs baseline *values*, not just a hash).
+assumed to be `frontend.config.json` at the repo root, and module loading uses `eval`
+in the UI iframe (fine there; never in the plugin's main thread).
 
 **Token:** a **fine-grained PAT** scoped to this repo with **Contents: Read/Write**.
 **One repo setting:** Settings → Actions → General → *Workflow permissions* → enable
